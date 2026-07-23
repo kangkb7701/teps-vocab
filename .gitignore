@@ -1,0 +1,9 @@
+# 개인 진행 기록 / 생성물 (공개 안 함)
+progress.json
+audio_cache/
+__pycache__/
+*.pyc
+web_words.json
+# 원본 저작권 자료(해커스) — 절대 커밋 금지
+*.pdf
+*.zip
