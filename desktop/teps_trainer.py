@@ -9,7 +9,7 @@ TEPS 350+ 대비 30일 단어 암기 프로그램 (로컬 GUI)
 - 저장:    progress.json (단어별 박스/마스터/통계, 이어하기)
 - 오디오:  gTTS(mp3 캐시) → 실패 시 pyttsx3(오프라인) 폴백
 """
-import os, sys, json, re, threading, hashlib, queue
+import os, sys, json, re, threading, hashlib, queue, random
 from datetime import datetime, timezone
 import tkinter as tk
 from tkinter import font as tkfont
@@ -18,6 +18,7 @@ from tkinter import messagebox
 BASE = os.path.dirname(os.path.abspath(__file__))
 VOCAB_PATH = os.path.join(BASE, "vocab.json")
 PROGRESS_PATH = os.path.join(BASE, "progress.json")
+EXAMPLES_PATH = os.path.join(BASE, "examples.json")
 AUDIO_DIR = os.path.join(BASE, "audio_cache")
 NUM_DAYS = 30
 REVIEW_CAP = 200         # 홈 '복습 세션'에서 한 번에 담는 약한 단어 최대 수
@@ -206,6 +207,7 @@ class Store:
             self.day_of[key] = day
         self.days = {d: [e for e in self.vocab if e["day"] == d] for d in range(1, NUM_DAYS + 1)}
         self._load_images()
+        self._load_examples()
         self.progress = self._load_progress()
 
     def _load_images(self):
@@ -218,9 +220,25 @@ class Store:
                     imgs = json.load(f)
             except Exception:
                 imgs = {}
-        for key, e in self.by_key.items():
-            img = imgs.get(key)
+        # by_key는 소문자 중복 시 하나만 남으므로 vocab 전체를 순회해야 누락이 없다
+        for e in self.vocab:
+            img = imgs.get(e["key"])
             e["image"] = img if isinstance(img, str) else ""
+
+    def _load_examples(self):
+        """examples.json(단어key -> {"s": 빈칸 예문, "t": 해석, "d": 오답 3개}) 오버레이."""
+        exs = {}
+        if os.path.exists(EXAMPLES_PATH):
+            try:
+                with open(EXAMPLES_PATH, encoding="utf-8") as f:
+                    exs = json.load(f)
+            except Exception:
+                exs = {}
+        for e in self.vocab:
+            v = exs.get(e["key"])
+            ok = (isinstance(v, dict) and isinstance(v.get("s"), str) and "____" in v["s"]
+                  and isinstance(v.get("d"), list) and len(v["d"]) >= 3)
+            e["ex"] = v if ok else None
 
     def _load_progress(self):
         if os.path.exists(PROGRESS_PATH):
@@ -319,6 +337,11 @@ class Store:
 
     def total_due(self):
         return len(self.due_reviews(before_day=None, cap=10 ** 9))
+
+    def day_weak(self, day):
+        """이 Day에서 마지막 평가가 모름/애매(box 1/2)인 단어들."""
+        return [e for e in self.days[day]
+                if self.progress["words"].get(e["key"], {}).get("box", 0) in (1, 2)]
 
 
 # =========================================================
@@ -425,6 +448,58 @@ class Session:
 
 
 # =========================================================
+#  예문 빈칸 테스트 (TEPS 스타일 4지선다)
+# =========================================================
+class Quiz:
+    """Day 단어의 예문 빈칸 4지선다.
+    - 맞힘: 모름/애매(box 1/2)였던 단어는 '알았음(3)'으로 승급
+    - 틀림: 이미 학습한 단어(box>0)는 '모름(1)'으로 강등 → 복습 대상
+    - 아직 안 본 단어(box 0)는 기록을 건드리지 않음 (Day 학습 큐 유지)
+    """
+    def __init__(self, store, day, entries, title):
+        self.store = store
+        self.day = day
+        self.title = title
+        self.items = [e for e in entries if e.get("ex")]
+        random.shuffle(self.items)
+        self.pos = 0
+        self.correct = 0
+        self.wrong = []          # 틀린 entry들
+        self.choices = []        # 현재 문제의 보기(단어 문자열 4개)
+        self.answered = None     # None=미응답, 아니면 고른 보기 index
+
+    def current(self):
+        return self.items[self.pos] if self.pos < len(self.items) else None
+
+    def make_choices(self):
+        e = self.current()
+        opts = [e["word"]] + list(e["ex"]["d"][:3])
+        random.shuffle(opts)
+        self.choices = opts
+        self.answered = None
+
+    def answer(self, idx):
+        """보기 선택. True=정답. 진행 기록도 여기서 갱신."""
+        e = self.current()
+        ok = self.choices[idx] == e["word"]
+        self.answered = idx
+        box = self.store.progress["words"].get(e["key"], {}).get("box", 0)
+        if ok:
+            self.correct += 1
+            if box in (1, 2):
+                self.store.apply_eval(e["key"], 3, self.day)
+        else:
+            self.wrong.append(e)
+            if box > 0:
+                self.store.apply_eval(e["key"], 1, self.day)
+        return ok
+
+    def next(self):
+        self.pos += 1
+        return self.current()
+
+
+# =========================================================
 #  GUI
 # =========================================================
 class App(tk.Tk):
@@ -434,6 +509,7 @@ class App(tk.Tk):
         self._audio_q = queue.Queue()                # 스레드 안전한 오디오 상태 전달
         self.audio = AudioManager(status_cb=self._audio_q.put)
         self.session = None
+        self.quiz = None
         self.revealed = False
         self.auto_audio = tk.BooleanVar(value=True)
 
@@ -450,6 +526,7 @@ class App(tk.Tk):
         self.f_small = tkfont.Font(family="Malgun Gothic", size=10)
         self.f_btn = tkfont.Font(family="Malgun Gothic", size=13, weight="bold")
         self.f_image = tkfont.Font(family="Malgun Gothic", size=13)
+        self.f_sent = tkfont.Font(family="Segoe UI", size=17)
 
         self.container = tk.Frame(self, bg=BG)
         self.container.pack(fill="both", expand=True)
@@ -484,6 +561,7 @@ class App(tk.Tk):
     # ---------- 홈 ----------
     def show_home(self):
         self.session = None
+        self.quiz = None
         self._clear()
         c = self.container
         tk.Label(c, text="TEPS 350+  ·  30일 단어 암기", font=self.f_h1,
@@ -553,12 +631,15 @@ class App(tk.Tk):
     # ---------- Day 상세 ----------
     def show_day(self, day):
         self.session = None
+        self.quiz = None
         self._clear()
         c = self.container
         done, tot = self.store.day_progress(day)
         unseen = tot - done
+        weak = self.store.day_weak(day)
+        n_ex = sum(1 for e in self.store.days[day] if e.get("ex"))
         tk.Label(c, text=f"Day {day}", font=self.f_h1, bg=BG, fg=FG).pack(pady=(22, 2))
-        tk.Label(c, text=f"총 {tot}개  ·  본 단어 {done}개  ·  안 본 새 단어 {unseen}개",
+        tk.Label(c, text=f"총 {tot}개  ·  본 단어 {done}개  ·  안 본 새 단어 {unseen}개  ·  약한 단어 {len(weak)}개",
                  font=self.f_small, bg=BG, fg=SUB).pack(pady=(0, 16))
 
         col = tk.Frame(c, bg=BG)
@@ -568,6 +649,15 @@ class App(tk.Tk):
         b1.pack(fill="x", pady=5)
         if unseen == 0 and tot > 0:
             b1.config(state="disabled", cursor="arrow")
+        bq = self._btn(col, f"📝 예문 테스트 ({n_ex}문제)", lambda: self.start_quiz(day), bg=GOOD)
+        bq.pack(fill="x", pady=5)
+        if n_ex == 0:
+            bq.config(state="disabled", cursor="arrow", text="📝 예문 테스트 (데이터 없음)")
+        bw = self._btn(col, f"🔁 약한 단어만 다시보기 ({len(weak)}개)",
+                       lambda: self.start_day_weak(day), bg=WARN)
+        bw.pack(fill="x", pady=5)
+        if not weak:
+            bw.config(state="disabled", cursor="arrow")
         self._btn(col, "🔁 전체 다시보기 (처음부터)", lambda: self.replay_day(day),
                   bg=WARN).pack(fill="x", pady=5)
         self._btn(col, "📋 전체 단어 보기 (목록)", lambda: self.show_day_list(day),
@@ -681,6 +771,146 @@ class App(tk.Tk):
             self.show_home(); return
         self._begin_session(Session.restore(self.store, act))
 
+    def start_day_weak(self, day):
+        """이 Day에서 모름/애매(box 1/2)인 단어만 카드로 다시보기."""
+        weak = self.store.day_weak(day)
+        if not weak:
+            messagebox.showinfo("약한 단어", "이 Day에는 모름/애매로 남은 단어가 없습니다!")
+            return
+        self.store.progress["last_day"] = day
+        self._begin_session(Session.for_words(self.store, day, weak, f"Day {day} 약한 단어"))
+
+    # ---------- 예문 빈칸 테스트 ----------
+    def start_quiz(self, day, entries=None, title=None):
+        pool = entries if entries is not None else self.store.days[day]
+        quiz = Quiz(self.store, day, pool, title or f"Day {day} 예문 테스트")
+        if not quiz.items:
+            messagebox.showinfo("예문 테스트", "이 Day의 예문 데이터가 아직 없습니다.")
+            return
+        self.session = None
+        self.quiz = quiz
+        self.show_quiz_question()
+
+    def show_quiz_question(self):
+        q = self.quiz
+        e = q.current()
+        if e is None:
+            self.show_quiz_summary()
+            return
+        q.make_choices()
+        self._clear()
+        c = self.container
+
+        header = tk.Frame(c, bg=BG)
+        header.pack(fill="x", padx=18, pady=(12, 4))
+        tk.Label(header, text=f"{q.title}", font=self.f_ui, bg=BG, fg=ACCENT).pack(side="left")
+        tk.Button(header, text="그만두기", command=lambda: self.show_day(q.day), font=self.f_small,
+                  bg=MUTED, fg=FG, relief="flat", bd=0, padx=12, pady=2, cursor="hand2",
+                  activebackground=MUTED, highlightbackground=BORDER,
+                  highlightthickness=1).pack(side="right")
+        self.lbl_qprog = tk.Label(header, text="", font=self.f_small, bg=BG, fg=SUB)
+        self.lbl_qprog.pack(side="right", padx=12)
+        self._update_quiz_header()
+
+        card = tk.Frame(c, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        card.pack(fill="both", expand=True, padx=18, pady=10)
+        tk.Label(card, text="빈칸에 알맞은 단어는?", font=self.f_small, bg=CARD, fg=SUB).pack(pady=(18, 4))
+        tk.Label(card, text=e["ex"]["s"], font=self.f_sent, bg=CARD, fg=FG,
+                 wraplength=740, justify="center").pack(padx=24, pady=(0, 10))
+
+        self.lbl_qverdict = tk.Label(card, text="", font=self.f_btn, bg=CARD)
+        self.lbl_qverdict.pack(pady=(2, 0))
+        self.lbl_qmean = tk.Label(card, text="", font=self.f_ui, bg=CARD, fg=FG,
+                                  wraplength=720, justify="center")
+        self.lbl_qmean.pack(pady=(2, 0))
+        self.lbl_qexpl = tk.Label(card, text="", font=self.f_small, bg=CARD, fg=SUB,
+                                  wraplength=720, justify="left")
+        self.lbl_qexpl.pack(padx=24, pady=(4, 12))
+
+        controls = tk.Frame(c, bg=BG)
+        controls.pack(fill="x", padx=18, pady=(0, 16))
+        self.quiz_btns = []
+        for j, w in enumerate(q.choices):
+            b = tk.Button(controls, text=f"{j+1}.  {w}", font=self.f_btn, bg=CARD, fg=FG,
+                          relief="flat", bd=0, pady=10, cursor="hand2", anchor="w", padx=16,
+                          activebackground=TILE_PROG, activeforeground=FG,
+                          highlightbackground=BORDER, highlightthickness=1,
+                          command=lambda jj=j: self._quiz_pick(jj))
+            b.pack(fill="x", pady=3)
+            self.quiz_btns.append(b)
+        self.btn_qnext = tk.Button(controls, text="다음  (Space)", command=self._quiz_next,
+                                   font=self.f_btn, bg=ACCENT, fg=BTN_FG, relief="flat",
+                                   bd=0, pady=12, cursor="hand2", activebackground=ACCENT,
+                                   activeforeground=BTN_FG)
+        # btn_qnext 는 답을 고른 뒤에만 pack
+
+    def _update_quiz_header(self):
+        q = self.quiz
+        answered = q.pos + (1 if q.answered is not None else 0)
+        self.lbl_qprog.config(
+            text=f"문제 {min(q.pos + 1, len(q.items))}/{len(q.items)}   ·   맞힘 {q.correct} / 틀림 {len(q.wrong)}")
+
+    def _quiz_pick(self, i):
+        q = self.quiz
+        if q is None or q.answered is not None or q.current() is None or i >= len(q.choices):
+            return
+        e = q.current()
+        ok = q.answer(i)
+        ans = e["word"]
+        for j, b in enumerate(self.quiz_btns):
+            if q.choices[j] == ans:
+                b.config(bg=GOOD, fg=BTN_FG)
+            elif j == i:
+                b.config(bg=BAD, fg=BTN_FG)
+            b.config(state="disabled", cursor="arrow")
+        self.lbl_qverdict.config(text="⭕ 정답!" if ok else f"❌ 오답 — 정답: {ans}",
+                                 fg=GOOD if ok else BAD)
+        pos = (e.get("pos", "") + " ") if e.get("pos") else ""
+        self.lbl_qmean.config(text=f"{ans}  ·  {pos}{e.get('meaning', '')}")
+        expl = e["ex"]["s"].replace("____", ans)
+        if e["ex"].get("t"):
+            expl += "\n" + e["ex"]["t"]
+        self.lbl_qexpl.config(text=expl)
+        self.btn_qnext.pack(fill="x", pady=(10, 0))
+        self._update_quiz_header()
+        if self.auto_audio.get():
+            self.audio.play(ans)
+
+    def _quiz_next(self):
+        q = self.quiz
+        if q is None or q.answered is None:
+            return
+        q.next()
+        self.show_quiz_question()
+
+    def show_quiz_summary(self):
+        q = self.quiz
+        self._clear()
+        c = self.container
+        total = len(q.items)
+        pct = round(q.correct * 100 / total) if total else 0
+        tk.Label(c, text=f"{q.title} 종료 🎉", font=self.f_h1, bg=BG, fg=GOOD).pack(pady=(30, 8))
+        tk.Label(c, text=f"{q.correct} / {total}  ({pct}%)", font=self.f_word, bg=BG,
+                 fg=GOOD if pct >= 80 else (WARN if pct >= 50 else BAD)).pack(pady=6)
+        if q.wrong:
+            tk.Label(c, text=f"틀린 단어 {len(q.wrong)}개 — 모름으로 표시되어 복습에 나옵니다",
+                     font=self.f_small, bg=BG, fg=SUB).pack(pady=(10, 2))
+            preview = ", ".join(e["word"] for e in q.wrong[:15])
+            tk.Label(c, text=preview, font=self.f_small, bg=BG, fg=WARN, wraplength=760).pack()
+        btns = tk.Frame(c, bg=BG)
+        btns.pack(pady=24)
+        day, wrong = q.day, list(q.wrong)
+        self._btn(btns, "🏠 홈으로", self.show_home, bg=CARD, fg=FG).pack(side="left", padx=6)
+        self._btn(btns, f"← Day {day}", lambda: self.show_day(day), bg=MUTED, fg=FG).pack(side="left", padx=6)
+        if wrong:
+            self._btn(btns, f"📝 틀린 것만 재시험 ({len(wrong)})",
+                      lambda: self.start_quiz(day, entries=wrong, title=f"Day {day} 오답 재시험"),
+                      bg=WARN).pack(side="left", padx=6)
+            self._btn(btns, "🔁 틀린 단어 카드 학습",
+                      lambda: self._begin_session(Session.for_words(self.store, day, wrong,
+                                                                    f"Day {day} 오답 복습")),
+                      bg=ACCENT).pack(side="left", padx=6)
+
     def test_audio(self):
         """실제로 테스트음을 재생하고 각 단계 결과를 알려준다."""
         self.config(cursor="watch"); self.update()
@@ -704,6 +934,7 @@ class App(tk.Tk):
         messagebox.showinfo("소리 테스트", head + "\n".join(lines) + tail)
 
     def _begin_session(self, session):
+        self.quiz = None
         self.session = session
         if session.remaining() == 0:
             if session.kind == "day":
@@ -766,6 +997,9 @@ class App(tk.Tk):
         self.lbl_image = tk.Label(self.answer, text="", font=self.f_image, bg=CARD, fg=IMG_FG,
                                   wraplength=700, justify="left")
         self.lbl_image.pack(fill="x", padx=40, pady=(2, 6))
+        self.lbl_ex = tk.Label(self.answer, text="", font=self.f_small, bg=CARD, fg=SUB,
+                               wraplength=700, justify="left")
+        self.lbl_ex.pack(fill="x", padx=40, pady=(0, 4))
         self.lbl_meta = tk.Label(self.answer, text="", font=self.f_small, bg=CARD, fg=SUB)
         self.lbl_meta.pack()
         audio_row = tk.Frame(self.answer, bg=CARD)
@@ -842,6 +1076,14 @@ class App(tk.Tk):
             self.lbl_image.config(text="🧠  " + img, bg=IMG_BG, padx=16, pady=12)
         else:
             self.lbl_image.config(text="", bg=CARD, padx=0, pady=0)
+        ex = e.get("ex")
+        if ex:
+            txt = "✏️  " + ex["s"].replace("____", e["word"])
+            if ex.get("t"):
+                txt += "\n      " + ex["t"]
+            self.lbl_ex.config(text=txt)
+        else:
+            self.lbl_ex.config(text="")
         self.lbl_hint.config(text="")
         if hasattr(self, "lbl_audio"):
             self.lbl_audio.config(text="")
@@ -920,9 +1162,15 @@ class App(tk.Tk):
         self.show_home()
 
     def _on_key(self, ev):
+        k = ev.keysym
+        if self.quiz is not None:
+            if k in ("1", "2", "3", "4", "KP_1", "KP_2", "KP_3", "KP_4"):
+                self._quiz_pick(int(k[-1]) - 1)
+            elif k in ("space", "Return"):
+                self._quiz_next()
+            return
         if self.session is None:
             return
-        k = ev.keysym
         if k in ("space", "Return"):
             if not self.revealed:
                 self.reveal()

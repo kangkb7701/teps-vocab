@@ -182,7 +182,8 @@ def parse_pdf(path):
 
 def main():
     all_entries = []
-    for pdf in glob.glob("**/*.pdf", recursive=True):
+    # 단어암기장 PDF는 상위 TEPS 폴더(리딩/리스닝 등) 어디에 있어도 찾는다
+    for pdf in glob.glob(os.path.join(BASE, "..", "**", "*.pdf"), recursive=True):
         if "Daily Checkup" in pdf:
             continue  # 예문 해석 모음 → 단어 소스 아님
         ents = parse_pdf(pdf)
