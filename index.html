@@ -35225,7 +35225,11 @@ function mergeDocs(){
       const t=st[k]||0, ot=out.ts[k];
       if(ot===undefined || t>ot || (t===ot && sb[k]>out.box[k])){ out.box[k]=sb[k]; out.ts[k]=t; }
     }
-    if(src.lastDay && (src.lastDayTs||0)>=out.lastDayTs){ out.lastDay=src.lastDay; out.lastDayTs=src.lastDayTs||0; }
+    // 동점(=구버전 기록, ts 없음)이면 큰 Day가 이긴다.
+    // '나중에 병합한 쪽이 이김'으로 두면 기기 순서에 따라 값이 달라져 영영 수렴하지 않는다.
+    const lt=src.lastDayTs||0;
+    if(src.lastDay && (lt>out.lastDayTs || (lt===out.lastDayTs && src.lastDay>(out.lastDay||0)))){
+      out.lastDay=src.lastDay; out.lastDayTs=lt; }
   }
   return out;
 }
