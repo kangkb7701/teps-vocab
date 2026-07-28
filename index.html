@@ -148,6 +148,18 @@
   .exbox{background:var(--muted); border-radius:12px; padding:12px 14px; font-size:14px;
     text-align:left; margin:8px 0; line-height:1.55}
   .exbox .ext{color:var(--sub)}
+  .inp{width:100%; box-sizing:border-box; padding:12px 14px; border-radius:12px;
+    border:1px solid var(--border); background:var(--card); color:var(--fg);
+    font-size:15px; font-family:inherit; margin:6px 0}
+  .inp:focus{outline:none; border-color:var(--accent)}
+  .syncbox{background:var(--muted); border-radius:12px; padding:12px 14px; font-size:13px;
+    text-align:left; margin:8px 0; line-height:1.6; color:var(--sub)}
+  .syncbox b{color:var(--fg)}
+  .syncbox code{font-size:12px; word-break:break-all}
+  .synced{color:var(--good)}
+  .syncerr{color:var(--bad)}
+  #syncBtn.on{color:var(--good)}
+  #syncBtn.busy{opacity:.45}
   @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 
@@ -155,6 +167,7 @@
   <div class="topbar">
     <button class="iconbtn" id="backBtn" style="display:none">‹ 뒤로</button>
     <div class="ttl" id="topTitle">TEPS 단어</div>
+    <button class="iconbtn" id="syncBtn" title="동기화">☁</button>
     <button class="iconbtn" id="themeBtn" title="테마">◑</button>
   </div>
   <div class="content" id="app"></div>
@@ -34896,10 +34909,23 @@ RAW.forEach(e=>{
 let P;
 try{ P=JSON.parse(localStorage.getItem(KEY))||{}; }catch(_){ P={}; }
 P.box=P.box||{};          // idx -> 1/2/3 (없거나 0 = 안 봄)
+P.ts=P.ts||{};            // idx -> 변경 시각(epoch초). 동기화 병합 기준
 P.lastDay=P.lastDay||null;
+P.lastDayTs=P.lastDayTs||0;
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(P)); }catch(_){} }
 const boxOf=i=>P.box[i]||0;
 const seen=i=>boxOf(i)>0;
+const nowMs=()=>Date.now();   // 밀리초. 초 단위면 같은 초에 일어난 두 변경이 무승부가 돼 병합이 어긋난다
+
+// 인덱스가 아니라 '단어'를 동기화 키로 쓴다 (단어 목록이 바뀌어도 기록이 안 어긋나게).
+// 같은 단어가 두 번 이상 나오면 두 번째부터 word#2, word#3 …
+const SKEY=(()=>{ const c={}; return RAW.map(e=>{ const w=e.w.toLowerCase();
+  const n=c[w]=(c[w]||0)+1; return n===1? w : w+"#"+n; }); })();
+const SIDX={}; SKEY.forEach((k,i)=>{ SIDX[k]=i; });
+
+// 진행상황 변경은 전부 이 두 함수를 거친다 (시각 기록 + 동기화 예약)
+function setBox(i,v){ P.box[i]=v; P.ts[i]=nowMs(); syncTouch(); }
+function setLastDay(d){ if(P.lastDay===d) return; P.lastDay=d; P.lastDayTs=nowMs(); syncTouch(); }
 
 // theme
 if(P.theme){ document.documentElement.setAttribute("data-theme",P.theme); }
@@ -34926,8 +34952,8 @@ function speak(t){
 const app=document.getElementById("app");
 const backBtn=document.getElementById("backBtn");
 const topTitle=document.getElementById("topTitle");
-let backTo=null;
-function setTop(title, back){ topTitle.textContent=title;
+let backTo=null, curView=null;
+function setTop(title, back){ topTitle.textContent=title; curView=null;
   if(back){ backBtn.style.display=""; backTo=back; } else { backBtn.style.display="none"; backTo=null; } }
 backBtn.onclick=()=>{ if(backTo) backTo(); };
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -34939,7 +34965,7 @@ function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.rand
 // ================= HOME =================
 function home(){
   Q=null; S=null;
-  setTop("TEPS 단어", null);
+  setTop("TEPS 단어", null); curView="home";
   const total=RAW.length, mastered=Object.keys(P.box).filter(i=>P.box[i]===3).length;
   const due=RAW.filter(e=>[1,2].includes(boxOf(e.idx))).length;
   let html=`<h1>TEPS 350+ · 30일 단어</h1>
@@ -34957,7 +34983,9 @@ function home(){
     html+=`<div class="${cls}" data-act="dayview" data-d="${d}"><div class="d">Day ${d}</div><div class="s">${s}</div></div>`;
   }
   html+=`</div>
-    <div class="footnote">단어를 보고 뜻을 떠올린 뒤 → 뜻 확인 → 1/2/3 자가평가.<br>진행은 이 기기에 자동 저장됩니다.</div>`;
+    <div class="footnote">단어를 보고 뜻을 떠올린 뒤 → 뜻 확인 → 1/2/3 자가평가.<br>
+      ${syncOn()? `진행은 자동 저장되고, 공부를 마치면 다른 기기와 자동으로 맞춰집니다. (마지막 동기화 ${fmtTime(CFG.lastSync)})`
+                : `진행은 이 기기에만 저장됩니다. 위 ☁ 를 눌러 다른 기기와 연동할 수 있습니다.`}</div>`;
   app.innerHTML=html; window.scrollTo(0,0);
 }
 
@@ -34982,10 +35010,10 @@ function dayView(d){
 
 // ================ STUDY =================
 let S=null; // session
-function startDay(d){ P.lastDay=d; save();
+function startDay(d){ setLastDay(d);
   const q=DAYS[d].filter(e=>!seen(e.idx)).map(e=>e.idx);
   begin({kind:"day", day:d, title:"Day "+d, queue:q}); }
-function replayDay(d){ P.lastDay=d; save();
+function replayDay(d){ setLastDay(d);
   begin({kind:"replay", day:d, title:"Day "+d+" 다시보기", queue:DAYS[d].map(e=>e.idx)}); }
 function reviewSession(){
   const q=RAW.filter(e=>[1,2].includes(boxOf(e.idx))).map(e=>e.idx);
@@ -34993,7 +35021,7 @@ function reviewSession(){
 function weakSession(d){
   const q=dayWeak(d).map(e=>e.idx);
   if(!q.length){ alert("이 Day에는 모름/애매로 남은 단어가 없습니다!"); return; }
-  P.lastDay=d; save();
+  setLastDay(d);
   begin({kind:"review", day:d, title:`Day ${d} 약한 단어`, queue:q});
 }
 function begin(sess){
@@ -35034,7 +35062,7 @@ function renderStudy(){
   app.innerHTML=html; window.scrollTo(0,0);
 }
 function reveal(){ S.revealed=true; renderStudy(); if(autoAudioOn()) speak(RAW[S.current].w); }
-function rate(s){ P.box[S.current]=s; save(); S.ev[s]++; nextWord(); }
+function rate(s){ setBox(S.current,s); S.ev[s]++; nextWord(); }
 
 // =============== SUMMARY ================
 function summary(){
@@ -35124,8 +35152,8 @@ function quizPick(j){
   if(!e||j<0||j>=Q.choices.length)return;
   Q.picked=j;
   const ok=Q.choices[j]===e.w, box=boxOf(e.idx);
-  if(ok){ Q.correct++; if(box===1||box===2){ P.box[e.idx]=3; save(); } }
-  else  { Q.wrong.push(e); if(box>0){ P.box[e.idx]=1; save(); } }
+  if(ok){ Q.correct++; if(box===1||box===2){ setBox(e.idx,3); } }
+  else  { Q.wrong.push(e); if(box>0){ setBox(e.idx,1); } }
   renderQuiz();
   if(autoAudioOn()) speak(e.w);
 }
@@ -35149,12 +35177,239 @@ function quizSummary(){
   app.innerHTML=html; window.scrollTo(0,0);
 }
 
+// ============== 동기화 (GitHub Gist) ==============
+// 매 문제마다 올리지 않는다. '세션이 끝난 시점'에만 정산해서 올린다:
+//   ① 앱이 백그라운드로 감(홈버튼·앱전환·화면잠금·탭닫기) ② 60초 무조작 ③ 수동 버튼
+// 모바일은 탭을 안 닫으므로 ①②가 실질적인 '종료' 신호이고,
+// ①은 iOS가 요청을 끊어버릴 수 있어서 성공 확인이 안 되면 다음 실행 때 자동 재시도한다.
+const SYNC_KEY="teps_sync_v1", GIST_FILE="teps-progress.json";
+const IDLE_MS=60000, MAX_HOLD_MS=5*60000;
+let CFG; try{ CFG=JSON.parse(localStorage.getItem(SYNC_KEY))||{}; }catch(_){ CFG={}; }
+function cfgSave(){ try{ localStorage.setItem(SYNC_KEY, JSON.stringify(CFG)); }catch(_){} }
+const syncOn=()=>!!(CFG.token && CFG.gistId);
+const isDirty=()=>(P.dirtyTs||0)>(CFG.pushedTs||0);   // 아직 못 올린 변경이 있나
+const syncBtn=document.getElementById("syncBtn");
+let syncing=false, idleTimer=null;
+
+function syncTouch(){
+  const wasClean=!isDirty();
+  P.dirtyTs=nowMs(); if(wasClean) P.firstDirtyTs=P.dirtyTs;
+  save(); paintSyncBtn();
+  if(!syncOn()) return;
+  clearTimeout(idleTimer);
+  // 쉬지 않고 계속 공부하면 idle 타이머가 한 번도 안 돈다.
+  // 밀린 지 MAX_HOLD_MS 넘으면 중간에 한 번 정산해 둔다 (탭을 갑자기 닫아도 안 날아가게).
+  if(nowMs()-(P.firstDirtyTs||P.dirtyTs) > MAX_HOLD_MS){ runSync("hold"); return; }
+  idleTimer=setTimeout(()=>runSync("idle"), IDLE_MS);
+}
+function paintSyncBtn(){
+  syncBtn.classList.toggle("on", syncOn() && !isDirty());
+  syncBtn.textContent = syncing? "⟳" : (syncOn()? (isDirty()?"☁·":"☁") : "☁");
+}
+
+// ---- 동기화 문서: 인덱스가 아니라 단어 키로 저장 ----
+function localDoc(){
+  const box={}, ts={};
+  for(const i in P.box){ const k=SKEY[i]; if(k===undefined) continue;
+    box[k]=P.box[i]; ts[k]=P.ts[i]||0; }
+  return {v:1, app:"teps_mobile", box, ts,
+          lastDay:P.lastDay||null, lastDayTs:P.lastDayTs||0};
+}
+// 단어별로 더 최근 기록이 이긴다. 시각이 같으면(=구버전 기록) 더 높은 박스가 이긴다.
+function mergeDocs(){
+  const out={v:1, app:"teps_mobile", box:{}, ts:{}, lastDay:null, lastDayTs:0};
+  for(const src of arguments){
+    if(!src || typeof src!=="object") continue;
+    const sb=src.box||{}, st=src.ts||{};
+    for(const k in sb){          // 이 빌드에 없는 단어도 버리지 않고 그대로 보존한다
+      const t=st[k]||0, ot=out.ts[k];
+      if(ot===undefined || t>ot || (t===ot && sb[k]>out.box[k])){ out.box[k]=sb[k]; out.ts[k]=t; }
+    }
+    if(src.lastDay && (src.lastDayTs||0)>=out.lastDayTs){ out.lastDay=src.lastDay; out.lastDayTs=src.lastDayTs||0; }
+  }
+  return out;
+}
+// box뿐 아니라 ts까지 같아야 '올릴 것 없음'이다.
+// 값은 그대로고 시각만 바뀐 경우 push를 건너뛰면 원격에 낡은 시각이 남아,
+// 나중에 다른 기기의 '더 오래된' 변경이 이겨버린다.
+function sameDoc(a,b){
+  if(!a || !b) return false;
+  const ab=a.box||{}, bb=b.box||{}, at=a.ts||{}, bt=b.ts||{};
+  if(Object.keys(ab).length!==Object.keys(bb).length) return false;
+  for(const k in bb){ if(ab[k]!==bb[k] || (at[k]||0)!==(bt[k]||0)) return false; }
+  return (a.lastDay||null)===(b.lastDay||null) && (a.lastDayTs||0)===(b.lastDayTs||0);
+}
+function applyDoc(doc){
+  let changed=false;
+  const b=doc.box||{}, t=doc.ts||{};
+  for(const k in b){
+    const i=SIDX[k]; if(i===undefined) continue;
+    if(P.box[i]!==b[k]){ P.box[i]=b[k]; changed=true; }
+    P.ts[i]=t[k]||0;
+  }
+  if(doc.lastDay && (doc.lastDayTs||0)>=(P.lastDayTs||0) && P.lastDay!==doc.lastDay){
+    P.lastDay=doc.lastDay; P.lastDayTs=doc.lastDayTs||0; changed=true; }
+  return changed;
+}
+
+// ---- GitHub API ----
+async function gh(path, method, bodyObj){
+  const r=await fetch("https://api.github.com"+path, {
+    method: method||"GET", cache:"no-store",
+    headers:{ "Authorization":"Bearer "+CFG.token,
+              "Accept":"application/vnd.github+json",
+              "X-GitHub-Api-Version":"2022-11-28" },
+    body: bodyObj? JSON.stringify(bodyObj) : undefined
+  });
+  if(!r.ok){
+    const t=await r.text().catch(()=>"");
+    let msg=r.status+"";
+    try{ msg+=" "+(JSON.parse(t).message||""); }catch(_){ msg+=" "+r.statusText; }
+    if(r.status===401) msg="401 토큰이 잘못됐거나 만료됨";
+    if(r.status===404) msg="404 Gist를 못 찾음 (ID 확인, 토큰에 gist 권한 있는지)";
+    throw new Error(msg);
+  }
+  return r.json();
+}
+async function readRemote(){
+  const g=await gh("/gists/"+CFG.gistId);
+  const f=g.files && g.files[GIST_FILE];
+  if(!f) return null;
+  let c=f.content;
+  if(f.truncated && f.raw_url){ c=await (await fetch(f.raw_url,{cache:"no-store"})).text(); }
+  try{ return JSON.parse(c); }catch(_){ return null; }
+}
+
+// reason: boot/visible/manual 은 변경이 없어도 '내려받기'를 위해 돈다. idle/hidden 은 변경 있을 때만.
+async function runSync(reason){
+  if(syncing || !syncOn()) return false;
+  if(reason!=="boot" && reason!=="visible" && reason!=="manual" && !isDirty()) return false;
+  syncing=true; paintSyncBtn();
+  const stamp=P.dirtyTs||0;   // 이 시점까지의 변경만 '올린 것'으로 인정
+  try{
+    const remote=await readRemote();
+    const merged=mergeDocs(remote, localDoc());   // 동점이면 로컬 우선
+    const pulled=applyDoc(merged); save();
+    if(!sameDoc(remote, merged)){
+      merged.updated=nowMs(); merged.updatedISO=new Date().toISOString();
+      await gh("/gists/"+CFG.gistId, "PATCH",
+        {files:{[GIST_FILE]:{content:JSON.stringify(merged)}}});
+    }
+    CFG.pushedTs=stamp; CFG.lastSync=nowMs(); CFG.lastErr=null; cfgSave();
+    if(pulled) rerenderIfIdle();
+    return true;
+  }catch(e){
+    CFG.lastErr=String(e && e.message || e); cfgSave();
+    return false;
+  }finally{ syncing=false; paintSyncBtn(); if(curView==="sync") syncView(); }
+}
+// 공부 중이 아닐 때만 화면을 다시 그린다 (세션 중에 화면이 튀지 않게)
+function rerenderIfIdle(){ if(S||Q) return; if(curView==="home") home(); }
+
+// ---- 종료 신호 ----
+document.addEventListener("visibilitychange",()=>{
+  if(document.visibilityState==="hidden"){ clearTimeout(idleTimer); if(isDirty()) runSync("hidden"); }
+  else runSync("visible");
+});
+window.addEventListener("pagehide",()=>{ if(isDirty()) runSync("hidden"); });
+
+// ================= 동기화 화면 =================
+function fmtTime(ms){
+  if(!ms) return "없음";
+  const d=new Date(ms), p=n=>String(n).padStart(2,"0");
+  return `${d.getMonth()+1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function syncView(){
+  Q=null; S=null;
+  setTop("동기화", home); curView="sync";
+  const nSeen=Object.keys(P.box).filter(i=>P.box[i]>0).length;
+  let html=`<h1>진행상황 동기화</h1>`;
+
+  if(syncOn()){
+    html+=`<div class="syncbox">
+      <b class="synced">✓ 연결됨</b> · Gist <code>${esc(CFG.gistId)}</code><br>
+      마지막 동기화: <b>${fmtTime(CFG.lastSync)}</b><br>
+      올릴 변경: <b>${isDirty()?"있음 (아직 못 올림)":"없음"}</b> · 이 기기 학습한 단어 ${nSeen}개
+      ${CFG.lastErr?`<br><span class="syncerr">마지막 오류: ${esc(CFG.lastErr)}</span>`:""}
+    </div>
+    <div class="footnote">공부를 멈추고 60초가 지나거나, 앱을 나가면 자동으로 정산해 올립니다.
+      앱을 다시 열면 먼저 내려받습니다.</div>
+    <button class="btn" data-act="syncnow">↻ 지금 동기화</button>
+    <button class="btn sec" data-act="syncopen">🔗 Gist 열어보기</button>`;
+  }else{
+    html+=`<div class="syncbox">
+      아직 이 기기의 진행상황은 <b>이 브라우저 안에만</b> 있습니다 (학습한 단어 ${nSeen}개).<br><br>
+      <b>연결하는 법</b><br>
+      1. GitHub → Settings → Developer settings → <b>Personal access tokens (classic)</b><br>
+      2. <b>Generate new token (classic)</b>, 권한(scope)은 <b>gist 하나만</b> 체크<br>
+      3. 만료는 No expiration 권장, 생성된 <code>ghp_…</code> 를 아래에 붙여넣기<br><br>
+      토큰은 이 기기 브라우저에만 저장되고 GitHub API로만 나갑니다.
+      기록은 <b>비공개(secret) Gist</b>에 저장됩니다.
+    </div>
+    <input class="inp" id="tokIn" type="password" placeholder="ghp_… 토큰 붙여넣기" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <input class="inp" id="gidIn" type="text" placeholder="(둘째 기기라면) 첫 기기의 Gist ID" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button class="btn" data-act="syncconnect">연결하기</button>
+    <div class="footnote">첫 기기는 Gist ID를 비워두면 새로 만들어 줍니다.
+      그때 표시되는 ID를 둘째 기기에 넣으세요.</div>`;
+  }
+
+  html+=`<div class="syncbox" style="margin-top:18px"><b>토큰 없이 옮기기</b><br>
+    진행상황을 텍스트로 뽑아 다른 기기에 붙여넣는 방법입니다.</div>
+    <button class="btn sec" data-act="syncexport">⬆ 내보내기 (복사)</button>
+    <button class="btn sec" data-act="syncimport">⬇ 가져오기 (붙여넣기)</button>`;
+  if(syncOn()) html+=`<button class="btn danger" data-act="syncoff">연결 해제</button>`;
+  app.innerHTML=html; window.scrollTo(0,0);
+}
+
+async function syncConnect(){
+  const tok=(document.getElementById("tokIn").value||"").trim();
+  const gid=(document.getElementById("gidIn").value||"").trim();
+  if(!tok){ alert("토큰을 붙여넣어 주세요."); return; }
+  CFG.token=tok; syncBtn.classList.add("busy");
+  try{
+    if(gid){
+      CFG.gistId=gid;
+      await readRemote();                      // 접근 확인
+    }else{
+      const g=await gh("/gists","POST",{
+        description:"TEPS 단어앱 진행상황 (자동 생성)", public:false,
+        files:{[GIST_FILE]:{content:JSON.stringify(localDoc())}}
+      });
+      CFG.gistId=g.id;
+    }
+    CFG.lastErr=null; cfgSave();
+    await runSync("manual");
+    alert("연결됐습니다.\n\nGist ID: "+CFG.gistId+"\n\n다른 기기에서는 같은 토큰과 이 ID를 넣으세요.");
+  }catch(e){
+    CFG.token=null; CFG.gistId=null; cfgSave();
+    alert("연결 실패: "+(e && e.message || e));
+  }finally{ syncBtn.classList.remove("busy"); syncView(); }
+}
+function syncExport(){
+  const txt=JSON.stringify(localDoc());
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(txt).then(
+      ()=>alert("클립보드에 복사했습니다. ("+txt.length+"자)\n다른 기기의 '가져오기'에 붙여넣으세요."),
+      ()=>prompt("아래 전체를 복사하세요:", txt));
+  }else prompt("아래 전체를 복사하세요:", txt);
+}
+function syncImport(){
+  const txt=prompt("다른 기기에서 내보낸 텍스트를 붙여넣으세요:");
+  if(!txt) return;
+  let doc; try{ doc=JSON.parse(txt); }catch(_){ alert("형식이 올바르지 않습니다."); return; }
+  if(!doc || !doc.box){ alert("진행상황 데이터가 아닙니다."); return; }
+  applyDoc(mergeDocs(doc, localDoc()));
+  syncTouch();
+  alert("합쳤습니다. 더 최근 기록이 살아남습니다.");
+  syncView();
+}
+
 // ============ event delegation ==========
 app.addEventListener("click",ev=>{
   const t=ev.target.closest("[data-act]"); if(!t)return;
   const a=t.dataset.act, d=+t.dataset.d, i=+t.dataset.i, s=+t.dataset.s;
   if(a==="dayview")dayView(d);
-  else if(a==="day"){P.lastDay=d;save();startDay(d);}
+  else if(a==="day"){setLastDay(d);startDay(d);}
   else if(a==="replay")replayDay(d);
   else if(a==="review")reviewSession();
   else if(a==="weak")weakSession(d);
@@ -35163,12 +35418,22 @@ app.addEventListener("click",ev=>{
   else if(a==="qnext")quizNext();
   else if(a==="requiz"){ const w=Q.wrong.slice(), dd=Q.day; startQuiz(dd, w, `Day ${dd} 오답 재시험`); }
   else if(a==="list")listView(d);
-  else if(a==="reset"){ if(confirm("Day "+d+"의 진행 기록을 지우고 '안 본' 상태로 되돌릴까요?\n(단어 데이터는 그대로)")){ DAYS[d].forEach(e=>{delete P.box[e.idx];}); save(); dayView(d); } }
+  else if(a==="reset"){ if(confirm("Day "+d+"의 진행 기록을 지우고 '안 본' 상태로 되돌릴까요?\n(단어 데이터는 그대로)")){
+    // 0 = '안 봄' 묘비. delete가 아니라 0을 남겨야 이 초기화가 다른 기기로도 전파된다.
+    const t=nowMs(); DAYS[d].forEach(e=>{ P.box[e.idx]=0; P.ts[e.idx]=t; });
+    syncTouch(); dayView(d); } }
   else if(a==="reveal")reveal();
   else if(a==="rate")rate(s);
   else if(a==="speak")speak(RAW[S.current].w);
   else if(a==="home")home();
   else if(a==="worddetail")wordDetail(i);
+  else if(a==="syncnow")runSync("manual").then(ok=>{ if(!ok&&CFG.lastErr) alert("동기화 실패: "+CFG.lastErr); });
+  else if(a==="syncconnect")syncConnect();
+  else if(a==="syncopen")window.open("https://gist.github.com/"+CFG.gistId,"_blank");
+  else if(a==="syncexport")syncExport();
+  else if(a==="syncimport")syncImport();
+  else if(a==="syncoff"){ if(confirm("이 기기의 연결을 해제할까요?\n(진행상황과 Gist는 그대로 남습니다)")){
+    CFG={}; cfgSave(); paintSyncBtn(); syncView(); } }
 });
 // 카드 아무 곳이나 눌러도 뜻 보기
 app.addEventListener("click",ev=>{
@@ -35186,7 +35451,10 @@ document.addEventListener("keydown",ev=>{
   else if(S.revealed&&["1","2","3"].includes(ev.key))rate(+ev.key);
 });
 
+syncBtn.onclick=()=>syncView();
 home();
+paintSyncBtn();
+runSync("boot");
 </script>
 
 </body>
