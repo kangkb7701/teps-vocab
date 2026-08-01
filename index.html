@@ -175,16 +175,39 @@
   .pbtn.hot{border-color:var(--accent)}
   .pbtn.hot .pt{color:var(--accent)}
 
-  .today{background:var(--card); border:1px solid var(--border); border-radius:16px;
-    padding:15px 16px; box-shadow:var(--shadow); margin:12px 0}
-  .today .hd{display:flex; align-items:baseline; justify-content:space-between; gap:8px}
-  .today .big{font-size:16px; font-weight:800}
-  .today .dd{font-size:13px; font-weight:800; color:var(--bad)}
-  .today .ln{font-size:13px; color:var(--sub); margin-top:6px; font-variant-numeric:tabular-nums}
-  .today .ln b{color:var(--fg); font-size:15px}
   .bar{height:8px; border-radius:8px; background:var(--muted); overflow:hidden; margin-top:10px}
   .bar > i{display:block; height:100%; background:var(--accent); border-radius:8px}
   .bar.g > i{background:var(--good)}
+
+  /* ===== PLAYER ADD-ON (듣기 모드 전용 스타일) ===== */
+  .plcard{background:var(--card); border:1px solid var(--border); border-radius:20px;
+    box-shadow:var(--shadow); padding:28px 20px; margin-top:12px; text-align:center;
+    display:flex; flex-direction:column; justify-content:center; min-height:40vh; cursor:pointer}
+  .plcard .pw{font-size:38px; font-weight:800; letter-spacing:-.5px; word-break:break-word; line-height:1.15}
+  .plcard .pm{font-size:21px; font-weight:600; margin-top:12px; line-height:1.45}
+  .plcard .pp{color:var(--accent); font-style:italic; font-size:14px; margin-top:5px}
+  .plcard .ph{color:var(--sub); font-size:15px; margin-top:12px; letter-spacing:4px}
+  .plcard .pn{color:var(--sub); font-size:12px; margin-top:14px}
+  .plcard.on{border-color:var(--accent)}
+
+  .plctl{display:grid; grid-template-columns:1fr 1.6fr 1fr; gap:9px; margin-top:14px}
+  .plctl button{border:none; border-radius:14px; padding:17px 6px; font-size:16px; font-weight:800;
+    cursor:pointer; box-shadow:var(--shadow); font-family:inherit;
+    background:var(--card); color:var(--fg); border:1px solid var(--border)}
+  .plctl button.main{background:var(--accent); color:var(--accent-fg); border-color:transparent}
+  .plctl button:active{transform:translateY(1px)}
+
+  .plopt{margin-top:16px}
+  .plrow{display:flex; align-items:center; gap:8px; margin:9px 0; flex-wrap:wrap}
+  .plrow > .lb{font-size:12px; color:var(--sub); font-weight:700; flex:0 0 62px}
+  .chip{border:1px solid var(--border); background:var(--card); color:var(--sub);
+    border-radius:20px; padding:7px 13px; font-size:13px; font-weight:700;
+    cursor:pointer; font-family:inherit}
+  .chip.sel{background:var(--accent); color:var(--accent-fg); border-color:transparent}
+  .chip:active{transform:translateY(1px)}
+  .plnote{color:var(--sub); font-size:12px; line-height:1.6; margin:14px 0 4px; text-align:center}
+  .plwarn{background:var(--imgbg); color:var(--imgfg); border-radius:12px;
+    padding:11px 13px; font-size:13px; line-height:1.55; margin:10px 0; text-align:left}
   @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 
@@ -35493,16 +35516,14 @@ runSync("boot");
 (function(){
   "use strict";
 
-  const EXAM_DATE = "2026-08-22";   // 시험일
   const PHASES = {
     top : { icon:"⚡", label:"최다빈출 단어", desc:"출제빈도 ★★ 이상만",
-            pick:e=>(e.f||0)>=2, days:4,  deadline:"2026-08-05" },
+            pick:e=>(e.f||0)>=2, days:4  },
     core: { icon:"🎯", label:"핵심 단어",     desc:"기초 필수 + 빈출 ★★ 이상",
-            pick:e=>!!e.c,       days:15, deadline:"2026-08-15" }
+            pick:e=>!!e.c,       days:15 }
   };
 
-  P.phase  = (P.phase && PHASES[P.phase]) ? P.phase : null;
-  P.dayLog = P.dayLog || {};        // "YYYY-MM-DD" -> {top:n, core:n, rev:n}
+  P.phase = (P.phase && PHASES[P.phase]) ? P.phase : null;
 
   // ---- phase 별 단어 풀 / Day 분할 (전역 DAYS 와 별개) ----
   const CACHE = {};
@@ -35517,32 +35538,6 @@ runSync("boot");
     return CACHE[id] = {id, def, pool, days};
   }
 
-  // ---- 날짜 ----
-  function todayKey(){ const d=new Date(), p=n=>String(n).padStart(2,"0");
-    return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate()); }
-  function daysUntil(iso){
-    const a=iso.split("-").map(Number), t=new Date(); t.setHours(0,0,0,0);
-    return Math.round((new Date(a[0], a[1]-1, a[2]) - t) / 86400000);
-  }
-  function todayLog(){ const k=todayKey(); return P.dayLog[k] || (P.dayLog[k]={}); }
-
-  // ---- 오늘 할 분량 ----
-  // 하루를 통째로 빠져도 벌점이 없다. '안 본 단어 ÷ 남은 날' 을 매일 다시 계산하므로
-  // 빠진 만큼 남은 날에 자동으로 다시 나눠 담긴다.
-  function phPlan(id){
-    const D = phData(id);
-    const unseen = D.pool.filter(e=>!seen(e.idx));
-    const due    = D.pool.filter(e=>[1,2].includes(boxOf(e.idx)));
-    const left   = Math.max(1, daysUntil(D.def.deadline) + 1);   // 오늘 포함, 마감 지나면 1
-    // 오늘 목표는 '그날 처음 연 시점'의 값으로 고정한다.
-    // 매번 다시 계산하면 공부할수록 분모까지 같이 줄어서 목표가 도망가는 것처럼 보인다.
-    const lg=todayLog(), qk=id+"Q";
-    if(lg[qk]===undefined){ lg[qk]=Math.min(unseen.length, Math.ceil(unseen.length/left)); save(); }
-    const quota = lg[qk], done = lg[id] || 0;
-    return { D, unseen, due, left, quota, done,
-             todo: Math.max(0, quota - done), dday: daysUntil(EXAM_DATE) };
-  }
-
   const isPhase = ()=> !!(P.phase && PHASES[P.phase]);
   const weakOf  = list => list.filter(e=>[1,2].includes(boxOf(e.idx)));
   const seenOf  = list => list.filter(e=>seen(e.idx)).length;
@@ -35552,47 +35547,42 @@ runSync("boot");
     P.phase = (id && PHASES[id]) ? id : null;
     save(); home();
   }
+  // 안 본 단어가 남은 첫 Day (없으면 null)
+  function nextDay(id){
+    const D=phData(id);
+    for(let d=1; d<=D.def.days; d++) if(D.days[d].some(e=>!seen(e.idx))) return d;
+    return null;
+  }
 
   // ================= phase 홈 =================
   function phaseHome(id){
     Q=null; S=null;
-    const pl=phPlan(id), D=pl.D, def=D.def;
+    const D=phData(id), def=D.def;
     setTop(def.icon+" "+def.label, null); curView="home";
-    const total=D.pool.length, done=total-pl.unseen.length;
+    const total=D.pool.length, done=seenOf(D.pool);
     const known=D.pool.filter(e=>boxOf(e.idx)===3).length;
+    const due=weakOf(D.pool).length;
     const pct=total? Math.round(done*100/total) : 0;
+    const next=nextDay(id);
 
     let html=`<h1>${def.icon} ${def.label} · ${total}개</h1>
       <div class="sub">${def.desc} · ${def.days}일 과정</div>
+      <div class="sub" style="margin-top:14px">진도 ${done}/${total} (${pct}%) · 알았음 ${known}개 · 복습 대기 ${due}개</div>
+      ${barHtml(pct, pct===100)}
 
-      <div class="today">
-        <div class="hd"><span class="big">오늘 할 몫</span>
-          <span class="dd">${pl.dday>0? "시험 D-"+pl.dday : (pl.dday===0? "시험 당일":"시험 지남")}</span></div>
-        <div class="ln">새 단어 <b>${pl.done} / ${pl.quota}</b>개${pl.quota>0&&pl.todo===0?" ✓":""} · 복습 대기 ${pl.due.length}개</div>
-        <div class="ln">안 본 ${pl.unseen.length}개를 남은 <b>${pl.left}일</b>에 나눠 담았습니다</div>
-        ${barHtml(pl.quota? Math.min(100, Math.round(pl.done*100/pl.quota)) : 100, pl.todo===0)}
-      </div>
+      <button class="btn" data-act="phnext" data-p="${id}" ${next?"":"disabled"}>${
+        next ? `▶ 이어서 학습 (Day ${next})` : `🎉 이 범위는 전부 봤습니다`}</button>`;
 
-      <button class="btn" data-act="phtoday" data-p="${id}">${
-        pl.todo>0     ? `▶ 오늘 몫 시작 (새 ${pl.todo}개 + 복습)`
-      : pl.due.length ? `✓ 오늘 신규 끝 — 복습 더 하기`
-      : pl.unseen.length ? `▶ 더 앞서 나가기`
-      :                 `🎉 이 범위는 전부 봤습니다`}</button>`;
+    if(due) html+=`<button class="btn warn" data-act="phreview" data-p="${id}">🔁 약한 단어 전체 복습 (${due}개)</button>`;
 
-    if(pl.due.length)
-      html+=`<button class="btn warn" data-act="phreview" data-p="${id}">🔁 약한 단어 전체 복습 (${pl.due.length}개)</button>`;
-
-    html+=`<div class="sub" style="margin-top:18px">진도 ${done}/${total} (${pct}%) · 알았음 ${known}개</div>
-      ${barHtml(pct)}
-      <div class="grid">`;
+    html+=`<div class="grid">`;
     for(let d=1; d<=def.days; d++){
       const list=D.days[d], n=seenOf(list), tot=list.length, comp=tot>0 && n===tot;
       html+=`<div class="tile ${comp?"done":(n>0?"prog":"")}" data-act="phday" data-p="${id}" data-d="${d}">
         <div class="d">Day ${d}</div><div class="s">${comp?"✓ 완료":(n>0? n+"/"+tot : tot+"개")}</div></div>`;
     }
     html+=`</div>
-      <div class="footnote">하루를 빠져도 괜찮습니다 — 남은 날에 자동으로 다시 나눠 담습니다.<br>
-        기록은 전체 범위와 공유됩니다. 여기서 외운 단어는 전체에서도 '봄'으로 표시됩니다.</div>
+      <div class="footnote">기록은 전체 범위와 공유됩니다. 여기서 외운 단어는 전체에서도 '봄'으로 표시됩니다.</div>
       <button class="btn sec" data-act="phexit">← 전체 ${RAW.length}개 · 30일 모드로</button>`;
     app.innerHTML=html; window.scrollTo(0,0);
   }
@@ -35646,19 +35636,9 @@ runSync("boot");
     begin({kind:"pweak", ph:id, day:d, title:D.def.label+" Day "+d+" 약한 단어", queue:q});
   }
   function phReview(id){
-    const q=phPlan(id).due.map(e=>e.idx);
+    const q=weakOf(phData(id).pool).map(e=>e.idx);
     if(!q.length){ alert("복습할 단어가 없습니다."); return; }
     begin({kind:"pweak", ph:id, day:null, title:PHASES[id].label+" 복습", queue:shuffle(q)});
-  }
-  function phToday(id){
-    const pl=phPlan(id);
-    // 신규는 우선순위 순서 그대로(앞쪽이 더 기본·빈출), 복습은 섞어서.
-    const nNew = pl.todo>0 ? Math.min(pl.todo, 150) : (pl.due.length? 0 : Math.min(pl.unseen.length, 40));
-    const revCap = pl.todo>0 ? Math.max(20, pl.todo*2) : 60;
-    const q = pl.unseen.slice(0, nNew).map(e=>e.idx)
-      .concat(shuffle(pl.due.slice()).slice(0, revCap).map(e=>e.idx));
-    if(!q.length){ alert("오늘 할 새 단어도, 복습할 단어도 없습니다. 🎉"); return; }
-    begin({kind:"pday", ph:id, day:null, title:PHASES[id].label+" 오늘 몫", queue:q});
   }
 
   // ============ 기존 함수 감싸기 (원본 동작 유지) ============
@@ -35674,16 +35654,6 @@ runSync("boot");
 
   const _listView = listView;
   listView = function(d){ return isPhase() ? phListView(P.phase, d) : _listView(d); };
-
-  // 오늘 몇 개 했는지 집계. 원래 rate() 를 그대로 부르고 카운터만 더한다.
-  const _rate = rate;
-  rate = function(s){
-    const id = S && S.ph, wasNew = S && !seen(S.current);
-    _rate(s);
-    if(id){ const lg=todayLog();
-      if(wasNew) lg[id]=(lg[id]||0)+1; else lg.rev=(lg.rev||0)+1;
-      save(); }
-  };
 
   function injectPhaseButtons(){
     const box=document.createElement("div");
@@ -35709,19 +35679,288 @@ runSync("boot");
     const a=t.dataset.act, p=t.dataset.p, d=+t.dataset.d;
     if(a==="phase")        setPhase(p);
     else if(a==="phexit")  setPhase(null);
-    else if(a==="phday")   phDayView(p,d);
+    // dayView 를 거쳐 간다 — 다른 애드온(듣기 모드 등)이 dayView 를 감싸서
+    // 버튼을 얹을 수 있게 하려면 여기서 phDayView 를 직접 부르면 안 된다.
+    else if(a==="phday")   dayView(d);
     else if(a==="phstart") phStartDay(p,d);
     else if(a==="phweak")  phWeak(p,d);
     else if(a==="phlist")  phListView(p,d);
     else if(a==="phreview")phReview(p);
-    else if(a==="phtoday") phToday(p);
+    else if(a==="phnext"){ const d=nextDay(p); if(d) phStartDay(p,d); }
     else if(a==="phquiz"){ const D=phData(p);
       startQuiz(d, D.days[d], D.def.label+" Day "+d+" 예문 테스트"); }
   });
 
+  // 다른 애드온에서 쓸 수 있게 최소한만 노출한다 (읽기 전용 용도).
+  window.PHASE_API = {
+    cur   : ()=> P.phase,
+    label : id => (PHASES[id]||{}).label || "",
+    // 해당 phase Day 의 단어 목록. phase 가 아니면 전체 모드 DAYS 로 넘긴다.
+    dayList: (id,d)=> (id && PHASES[id]) ? (phData(id).days[d]||[]) : (DAYS[d]||[])
+  };
+
   home();   // phase 상태를 반영해 한 번 다시 그린다
 })();
 /* ===== /PHASE ADD-ON ===== */
+
+/* ===== PLAYER ADD-ON ===== */
+/* Day 단어를 자동으로 넘기며 영어 발음 + 한국어 뜻을 읽어 주는 '듣기 모드'.
+   - 진행 기록(P.box)은 건드리지 않는다. 듣기만으로는 '봤음' 처리가 되지 않는다.
+   - 기존 speak() 와 별도의 음성 큐를 쓴다 (영/한 목소리를 따로 골라야 하므로).   */
+(function(){
+  "use strict";
+
+  const LKEY="teps_listen_v1";
+  let L; try{ L=JSON.parse(localStorage.getItem(LKEY))||{}; }catch(_){ L={}; }
+  L.mode  = L.mode  || "en_ko";              // en_ko(영어→뜻) | ko_en(뜻→영어) | en(영어만)
+  L.rate  = L.rate  || 1;                    // 배속
+  L.think = L.think==null ? 1200 : L.think;  // 앞을 듣고 뒤가 나오기까지 '생각할 시간'(ms)
+  L.gap   = L.gap==null   ? 700  : L.gap;    // 단어와 단어 사이 쉼(ms)
+  L.rep   = L.rep   || 1;                    // 한 단어를 몇 번 읽을지
+  L.order = L.order || "seq";                // seq | shuffle
+  L.range = L.range || "all";                // all | unseen | weak
+  L.hide  = L.hide!==false;                  // 뒤엣것(정답)을 소리 나기 전까지 가림
+  L.loop  = !!L.loop;
+  function lsave(){ try{ localStorage.setItem(LKEY, JSON.stringify(L)); }catch(_){} }
+
+  // ---- 목소리: 영어/한국어를 따로 고른다 ----
+  let enV=null, koV=null;
+  function pickV(){
+    const vs=(window.speechSynthesis && speechSynthesis.getVoices()) || [];
+    enV=vs.find(v=>/en[-_]US/i.test(v.lang)) || vs.find(v=>/^en/i.test(v.lang)) || null;
+    koV=vs.find(v=>/ko[-_]KR/i.test(v.lang)) || vs.find(v=>/^ko/i.test(v.lang)) || null;
+  }
+  if("speechSynthesis" in window){
+    pickV();
+    const prev=speechSynthesis.onvoiceschanged;
+    speechSynthesis.onvoiceschanged=function(){ pickV(); if(prev) try{ prev.apply(this,arguments); }catch(_){} };
+  }
+  // 뜻은 "예약하다 / 보존하다" 처럼 슬래시가 섞여 있다. 그대로 읽히면 어색하다.
+  const sayableMean = m => String(m||"").replace(/\s*\/\s*/g, ", ").replace(/\s+/g," ").trim();
+
+  // ---- 재생 상태 ----
+  let PL=null;   // {list,i,steps,si,gen,paused,shown,day,ph,timer,guard}
+  let wl=null;   // wake lock (화면 꺼짐 방지)
+
+  function clearT(){ if(PL){ clearTimeout(PL.timer); clearTimeout(PL.guard); } }
+  function kill(){ // 진행 중인 소리·타이머를 확실히 끊는다
+    if(!PL) return;
+    PL.gen++; clearT();
+    try{ speechSynthesis.cancel(); }catch(_){}
+  }
+  async function wakeOn(){ try{ if("wakeLock" in navigator && !wl) wl=await navigator.wakeLock.request("screen"); }catch(_){} }
+  function wakeOff(){ try{ if(wl) wl.release(); }catch(_){} wl=null; }
+
+  // ---- 한 단어를 어떤 순서로 읽을지 ----
+  function partsOf(e){
+    const w={t:e.w, l:"en"}, m={t:sayableMean(e.m), l:"ko"};
+    if(L.mode==="ko_en") return {a:m, b:w};       // 뜻 먼저 → 영어 (인출 연습)
+    if(L.mode==="en")    return {a:w, b:null};    // 영어만
+    return {a:w, b:m};                             // 영어 → 뜻
+  }
+  function buildSteps(e){
+    const {a,b}=partsOf(e), st=[];
+    for(let r=0;r<L.rep;r++){ st.push({s:a}); if(r<L.rep-1) st.push({w:280}); }
+    if(b){ if(L.think) st.push({w:L.think}); st.push({s:b, reveal:true}); }
+    st.push({w:L.gap});
+    return st;
+  }
+
+  function say(text, lang, cb){
+    const g=PL.gen;
+    const ok = ()=> PL && PL.gen===g && !PL.paused;
+    if(!("speechSynthesis" in window) || !text){ PL.timer=setTimeout(()=>{ if(ok()) cb(); }, 250); return; }
+    let done=false;
+    const fin=()=>{ if(done) return; done=true; clearTimeout(PL.guard); if(ok()) cb(); };
+    const u=new SpeechSynthesisUtterance(text);
+    u.lang = lang==="ko" ? "ko-KR" : "en-US";
+    const v = lang==="ko" ? koV : enV;
+    if(v) u.voice=v;
+    u.rate = Math.max(.1, Math.min(2, L.rate * (lang==="ko" ? 1.05 : .95)));
+    u.onend=fin; u.onerror=fin;
+    // onend 가 끝내 안 오는 브라우저가 있다. 넉넉한 보험 타이머로 재생이 멈추지 않게 한다.
+    PL.guard=setTimeout(fin, Math.max(1800, text.length*150/(L.rate||1)) + 1800);
+    try{ speechSynthesis.speak(u); }catch(_){ fin(); }
+  }
+
+  function run(){
+    if(!PL || PL.paused) return;
+    if(PL.si >= PL.steps.length) return advance();
+    const s=PL.steps[PL.si++];
+    if(s.w!=null){ const g=PL.gen; PL.timer=setTimeout(()=>{ if(PL&&PL.gen===g&&!PL.paused) run(); }, s.w); }
+    else { if(s.reveal && !PL.shown){ PL.shown=true; render(); } say(s.s.t, s.s.l, run); }
+  }
+  function load(){ PL.steps=buildSteps(PL.list[PL.i]); PL.si=0; PL.shown=!L.hide; render(); }
+  function advance(){
+    PL.i++;
+    if(PL.i >= PL.list.length){
+      if(!L.loop) return finish();
+      PL.i=0; if(L.order==="shuffle") shuffle(PL.list);
+    }
+    load(); run();
+  }
+  function jump(n){
+    kill();
+    PL.i=Math.max(0, Math.min(PL.list.length-1, PL.i+n));
+    load(); if(!PL.paused) run();
+  }
+  function pause(){ if(!PL||PL.paused) return; kill(); PL.paused=true;
+    PL.si=Math.max(0,PL.si-1); wakeOff(); render(); }
+  function play(){ if(!PL||!PL.paused) return; PL.paused=false; wakeOn(); render(); run(); }
+  function toggle(){ if(!PL) return; PL.paused? play() : pause(); }
+  function finish(){ if(!PL) return; kill(); PL.paused=true; PL.i=PL.list.length-1;
+    wakeOff(); PL.done=true; render(); }
+
+  function stop(){ if(!PL) return; kill(); wakeOff(); PL=null; }
+
+  // ---- 화면 ----
+  const chips=(key, opts)=> opts.map(o=>
+    `<button class="chip ${L[key]===o.v?"sel":""}" data-act="plset" data-k="${key}" data-v="${o.v}">${o.t}</button>`).join("");
+
+  function render(){
+    if(!PL) return;
+    const e=PL.list[PL.i], {a,b}=partsOf(e);
+    const show = PL.shown || !b;
+    // day 를 미리 붙잡아 둔다 — stop() 이 PL 을 비우고 나면 PL.day 를 읽을 수 없다.
+    const d=PL.day;
+    setTop("🎧 "+PL.title, ()=>{ stop(); dayView(d); }); curView="player";
+
+    const front = a.l==="en"
+      ? `<div class="pw">${esc(e.w)}</div>${e.p?`<div class="pp">${esc(e.p)}</div>`:""}`
+      : `<div class="pm" style="font-size:24px">${esc(e.m)}</div>`;
+    const back = !b ? (a.l==="en" ? `<div class="pm">${esc(e.m)}</div>` : "")
+      : show ? (b.l==="ko" ? `<div class="pm">${esc(e.m)}</div>`
+                           : `<div class="pw" style="margin-top:10px">${esc(e.w)}</div>`)
+             : `<div class="ph">• • •</div>`;
+
+    let html=`<div class="progline">${PL.i+1} / ${PL.list.length} · ${L.rate}배속 ${L.loop?"· 반복재생":""}</div>
+      <div class="bar"><i style="width:${Math.round((PL.i+1)*100/PL.list.length)}%"></i></div>
+      <div class="plcard ${PL.paused?"":"on"}" data-act="pltoggle">
+        ${front}${back}
+        <div class="pn">${PL.done? "재생 끝 🎉" : (PL.paused? "▶ 눌러서 계속" : "재생 중 · 카드를 누르면 일시정지")}</div>
+      </div>
+      <div class="plctl">
+        <button data-act="plprev">⏮</button>
+        <button class="main" data-act="pltoggle">${PL.paused? (PL.done?"↻ 처음부터":"▶ 재생") : "⏸ 일시정지"}</button>
+        <button data-act="plnext">⏭</button>
+      </div>
+      <div class="plopt">
+        <div class="plrow"><span class="lb">읽는 순서</span>${chips("mode",[
+          {v:"en_ko",t:"영어→뜻"},{v:"ko_en",t:"뜻→영어"},{v:"en",t:"영어만"}])}</div>
+        <div class="plrow"><span class="lb">배속</span>${chips("rate",[
+          {v:.7,t:"0.7x"},{v:.85,t:"0.85x"},{v:1,t:"1.0x"},{v:1.2,t:"1.2x"},{v:1.5,t:"1.5x"}])}</div>
+        <div class="plrow"><span class="lb">생각 시간</span>${chips("think",[
+          {v:0,t:"없음"},{v:1200,t:"1.2초"},{v:2500,t:"2.5초"},{v:4000,t:"4초"}])}</div>
+        <div class="plrow"><span class="lb">단어 간격</span>${chips("gap",[
+          {v:300,t:"0.3초"},{v:700,t:"0.7초"},{v:1500,t:"1.5초"}])}</div>
+        <div class="plrow"><span class="lb">반복</span>${chips("rep",[
+          {v:1,t:"1번"},{v:2,t:"2번"}])}</div>
+        <div class="plrow"><span class="lb">순서</span>${chips("order",[
+          {v:"seq",t:"순서대로"},{v:"shuffle",t:"섞기"}])}</div>
+        <div class="plrow"><span class="lb">범위</span>${chips("range",[
+          {v:"all",t:"이 Day 전체"},{v:"unseen",t:"안 본 것만"},{v:"weak",t:"약한 것만"}])}</div>
+        <div class="plrow"><span class="lb">뜻 가리기</span>${chips("hide",[
+          {v:true,t:"가림"},{v:false,t:"바로 보임"}])}</div>
+        <div class="plrow"><span class="lb">끝나면</span>${chips("loop",[
+          {v:false,t:"멈춤"},{v:true,t:"처음부터 반복"}])}</div>
+      </div>`;
+    if(!koV && L.mode!=="en")
+      html+=`<div class="plwarn">이 기기에 한국어 음성이 없어 뜻이 어색하게 읽힐 수 있습니다.
+        (아이폰: 설정 → 손쉬운 사용 → 음성 콘텐츠 → 음성 → 한국어 추가)</div>`;
+    html+=`<div class="plnote">화면이 켜져 있는 동안만 재생됩니다. 다른 앱으로 나가거나 화면이 잠기면
+      브라우저가 소리를 멈춥니다 — 돌아오면 이어서 누르면 됩니다.<br>
+      듣기만으로는 학습 기록(모름/애매/앎)이 바뀌지 않습니다.</div>`;
+    app.innerHTML=html; window.scrollTo(0,0);
+  }
+
+  // ---- 시작 ----
+  function open(d){
+    const ph=(window.PHASE_API && PHASE_API.cur()) || null;
+    const all=(window.PHASE_API ? PHASE_API.dayList(ph,d) : (DAYS[d]||[]));
+    let list=all.slice();
+    if(L.range==="unseen") list=list.filter(e=>!seen(e.idx));
+    else if(L.range==="weak") list=list.filter(e=>[1,2].includes(boxOf(e.idx)));
+    if(!list.length){ alert("재생할 단어가 없습니다."); return; }
+    if(L.order==="shuffle") shuffle(list);
+    stop();          // 앞선 재생이 남아 있으면 확실히 끊고 시작한다
+    S=null; Q=null;
+    const title=(ph? PHASE_API.label(ph)+" " : "")+"Day "+d+" 듣기";
+    PL={list, i:0, gen:0, paused:false, shown:!L.hide, day:d, title, done:false};
+    wakeOn(); load(); run();
+  }
+
+  // 설정을 바꾸면 현재 단어부터 새 설정으로 다시 읽는다
+  function setOpt(k, raw){
+    let v=raw;
+    if(k==="hide"||k==="loop") v=(raw==="true");
+    else if(k!=="mode" && k!=="order" && k!=="range") v=Number(raw);
+    if(L[k]===v) return;
+    const wasPlaying=PL && !PL.paused;
+    if(PL) kill();
+    L[k]=v; lsave();
+    if(!PL) return;
+    if(k==="range"){          // 범위가 바뀌면 목록 자체를 다시 뽑는다
+      const d=PL.day, all=(window.PHASE_API? PHASE_API.dayList(PHASE_API.cur(), d) : (DAYS[d]||[]));
+      let list=all.slice();
+      if(v==="unseen") list=list.filter(e=>!seen(e.idx));
+      else if(v==="weak") list=list.filter(e=>[1,2].includes(boxOf(e.idx)));
+      if(!list.length){ alert("그 범위에는 재생할 단어가 없습니다."); L[k]="all"; lsave(); render(); return; }
+      if(L.order==="shuffle") shuffle(list);
+      PL.list=list; PL.i=0;
+    }
+    if(k==="order"){   // 순서를 바꾸면 목록을 다시 만든다 (지금 단어는 유지)
+      const cur=PL.list[PL.i];
+      if(v==="shuffle") shuffle(PL.list); else PL.list.sort((x,y)=>x.idx-y.idx);
+      PL.i=Math.max(0, PL.list.indexOf(cur));
+    }
+    PL.done=false; load(); if(wasPlaying){ PL.paused=false; run(); }
+  }
+
+  // ---- Day 상세에 버튼 얹기 (전체 모드 · phase 모드 공통) ----
+  const _dayView=dayView;
+  dayView=function(d){
+    const r=_dayView(d);
+    const b=document.createElement("button");
+    b.className="btn sec"; b.dataset.act="plopen"; b.dataset.d=d;
+    b.textContent="🎧 듣기 모드 (자동 재생)";
+    const after=app.querySelector('[data-act="quiz"],[data-act="phquiz"]');
+    if(after) after.insertAdjacentElement("afterend", b); else app.appendChild(b);
+    return r;
+  };
+
+  // ---- 이벤트 ----
+  // 캡처 단계: 듣기 모드가 아닌 버튼을 누르면 먼저 소리부터 끊는다.
+  app.addEventListener("click", ev=>{
+    const t=ev.target.closest("[data-act]");
+    if(PL && (!t || !/^pl/.test(t.dataset.act))) stop();
+  }, true);
+  app.addEventListener("click", ev=>{
+    const t=ev.target.closest("[data-act]"); if(!t) return;
+    const a=t.dataset.act;
+    if(a==="plopen")        open(+t.dataset.d);
+    else if(!PL)            return;
+    else if(a==="pltoggle"){ if(PL.done){ PL.done=false; PL.i=0; PL.paused=false; wakeOn(); load(); run(); } else toggle(); }
+    else if(a==="plprev")   jump(-1);
+    else if(a==="plnext")   jump(1);
+    else if(a==="plset")    setOpt(t.dataset.k, t.dataset.v);
+  });
+  document.addEventListener("keydown", ev=>{
+    if(!PL || S || Q) return;
+    if(ev.key===" "||ev.key==="Enter"){ ev.preventDefault(); toggle(); }
+    else if(ev.key==="ArrowRight") jump(1);
+    else if(ev.key==="ArrowLeft")  jump(-1);
+  });
+  // 화면이 꺼지거나 앱을 나가면 브라우저가 음성을 끊는다. 상태를 맞춰 둔다.
+  document.addEventListener("visibilitychange", ()=>{
+    if(!PL) return;
+    if(document.visibilityState==="hidden") pause();
+    else if(!PL.paused) wakeOn();
+  });
+  const sb=document.getElementById("syncBtn"), _sc=sb.onclick;
+  sb.onclick=function(){ stop(); return _sc && _sc.apply(this, arguments); };
+})();
+/* ===== /PLAYER ADD-ON ===== */
+
 
 </script>
 
